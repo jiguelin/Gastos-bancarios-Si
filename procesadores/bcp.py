@@ -109,3 +109,20 @@ def procesar_pdf(nombre_archivo, ruta_archivo):
 
             if monto > 0:
                 registros.append({
+                    "Archivo": nombre_archivo,
+                    "Fecha": extraer_fecha(linea),
+                    "Concepto": categoria,
+                    "Monto": monto,
+                    "Concepto detectado": obtener_concepto_limpio(linea, categoria),
+                    "Línea original": linea
+                })
+
+    return registros
+
+
+def get_columnas_detalle_itf():
+    return ["Fecha", "Monto", "Concepto detectado", "Archivo", "Línea original"]
+
+
+def get_columnas_detalle_gastos():
+    return ["Fecha", "Monto", "Concepto detectado", "Archivo", "Línea original"]
