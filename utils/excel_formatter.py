@@ -138,6 +138,8 @@ def generar_excel_bbva(df, df_itf, df_gastos, columnas_ordenadas):
     df_asiento["Comentario"] = df_asiento["Concepto"].apply(
         lambda x: "Registrar un solo asiento mensual por ITF"
         if x == "IMPUESTO ITF"
+        else "Registrar como ingreso financiero a favor de la empresa"
+        if x == "INTERESES A FAVOR"
         else "Registrar un solo asiento mensual por comisiones y gastos bancarios"
     )
 
@@ -155,4 +157,4 @@ def generar_excel_bbva(df, df_itf, df_gastos, columnas_ordenadas):
 
 def nombre_archivo_reporte(banco: str) -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"reporte_itf_gastos_{banco.lower()}_{ts}.xlsx"
+    return f"reporte_itf_gastos_{banco.lower().replace(' ', '_')}_{ts}.xlsx"
