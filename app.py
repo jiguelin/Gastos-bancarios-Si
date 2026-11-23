@@ -4,7 +4,7 @@ import tempfile
 import os
 from datetime import datetime
 
-from procesadores import bcp, interbank, bbva, pichincha, caja_huancayo, scotiabank
+from procesadores import bcp, interbank, bbva, pichincha, caja_huancayo, scotiabank, caja_piura
 from utils.excel_formatter import (
     generar_excel_bcp,
     generar_excel_interbank,
@@ -88,6 +88,7 @@ st.markdown("""
     <span class="banco-badge">PICHINCHA</span>
     <span class="banco-badge">CAJA HUANCAYO</span>
     <span class="banco-badge">SCOTIABANK</span>
+    <span class="banco-badge">CAJA PIURA</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -96,7 +97,7 @@ with st.sidebar:
     st.markdown("---")
     banco = st.radio(
         "Selecciona el banco",
-        options=["BCP", "INTERBANK", "BBVA", "PICHINCHA", "CAJA HUANCAYO", "SCOTIABANK"],
+        options=["BCP", "INTERBANK", "BBVA", "PICHINCHA", "CAJA HUANCAYO", "SCOTIABANK", "CAJA PIURA"],
         index=0,
     )
     st.markdown("---")
@@ -142,8 +143,14 @@ with st.sidebar:
     - Mant Tarjet Empres Certificada
     - Comisión Tarjeta Joy Negocios
     - Intereses Acreedores (a favor)
+
+    **CAJA PIURA** *(Soles y Dólares)*
+    - ITF sobre depósitos y retiros (2 columnas)
+    - Comisiones / mantenimiento / portes
+    - Posible comisión CCE (S/ 2.30) → alerta
+    - Pago de intereses (a favor)
     """)
-    st.caption("v1.5 · Streamlit + pdfplumber + fitz")
+    st.caption("v1.6 · Streamlit + pdfplumber + fitz")
 
 st.markdown(f"#### 📂 Sube uno o varios estados de cuenta **{banco}** en PDF")
 
@@ -172,6 +179,7 @@ MODULOS_BANCO = {
     "PICHINCHA": pichincha,
     "CAJA HUANCAYO": caja_huancayo,
     "SCOTIABANK": scotiabank,
+    "CAJA PIURA": caja_piura,
 }
 
 
@@ -301,8 +309,8 @@ elif banco == "CAJA HUANCAYO" and not df.empty:
         if col not in df.columns:
             df[col] = ""
     df = df[columnas]
-elif banco == "SCOTIABANK" and not df.empty:
-    columnas = scotiabank.get_columnas_ordenadas()
+elif banco in ("SCOTIABANK", "CAJA PIURA") and not df.empty:
+    columnas = MODULOS_BANCO[banco].get_columnas_ordenadas()
     for col in columnas:
         if col not in df.columns:
             df[col] = ""
@@ -315,7 +323,7 @@ total_itf     = round(df_itf["Monto"].sum(), 2)    if not df_itf.empty    else 0
 total_gastos  = round(df_gastos["Monto"].sum(), 2) if not df_gastos.empty else 0.00
 total_general = round(total_itf + total_gastos, 2)
 
-# Intereses a favor (solo Pichincha por ahora)
+# Intereses a favor (Pichincha, Scotiabank, Caja Piura)
 df_intereses = df[df["Concepto"] == "INTERESES A FAVOR"].copy() if not df.empty else pd.DataFrame()
 total_intereses = round(df_intereses["Monto"].sum(), 2) if not df_intereses.empty else 0.00
 
@@ -486,7 +494,7 @@ with tab1:
             .reset_index()
         )
         df_res_show["Monto Total"] = df_res_show["Monto Total"].round(2)
-    elif banco in ("PICHINCHA", "CAJA HUANCAYO", "SCOTIABANK") and not df.empty:
+    elif banco in ("PICHINCHA", "CAJA HUANCAYO", "SCOTIABANK", "CAJA PIURA") and not df.empty:
         cols_group = [c for c in ["Año", "Mes", "Moneda", "Símbolo", "Concepto"] if c in df.columns]
         df_res_show = (
             df.groupby(cols_group, as_index=False)
@@ -581,13 +589,8 @@ try:
             bbva.get_columnas_ordenadas(),
         )
     else:
-        # Pichincha, Caja Huancayo y Scotiabank usan el mismo formato que BBVA
-        if banco == "PICHINCHA":
-            modulo = pichincha
-        elif banco == "CAJA HUANCAYO":
-            modulo = caja_huancayo
-        else:
-            modulo = scotiabank
+        # Pichincha, Caja Huancayo, Scotiabank y Caja Piura usan el mismo formato que BBVA
+        modulo = MODULOS_BANCO[banco]
         excel_bytes = generar_excel_bbva(
             df, df_itf, df_gastos,
             modulo.get_columnas_ordenadas(),
