@@ -143,7 +143,7 @@ with st.sidebar:
     - Comisión Tarjeta Joy Negocios
     - Intereses Acreedores (a favor)
     """)
-    st.caption("v1.4 · Streamlit + pdfplumber + fitz")
+    st.caption("v1.5 · Streamlit + pdfplumber + fitz")
 
 st.markdown(f"#### 📂 Sube uno o varios estados de cuenta **{banco}** en PDF")
 
@@ -165,6 +165,29 @@ if not archivos:
 # Procesamiento — los tres bancos ahora retornan {"registros": [], "alertas": []}
 # ---------------------------------------------------------------------------
 
+MODULOS_BANCO = {
+    "BCP": bcp,
+    "INTERBANK": interbank,
+    "BBVA": bbva,
+    "PICHINCHA": pichincha,
+    "CAJA HUANCAYO": caja_huancayo,
+    "SCOTIABANK": scotiabank,
+}
+
+
+@st.cache_data(show_spinner=False)
+def procesar_archivo(banco_sel: str, nombre: str, contenido: bytes) -> dict:
+    """Procesa un PDF una sola vez. Al marcar/desmarcar alertas la app se
+    recarga, y gracias al caché no vuelve a leer los PDF (es instantáneo)."""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(contenido)
+        ruta_tmp = tmp.name
+    try:
+        return MODULOS_BANCO[banco_sel].procesar_pdf(nombre, ruta_tmp)
+    finally:
+        os.unlink(ruta_tmp)
+
+
 todos_los_registros = []
 todas_las_alertas   = []
 archivos_procesados = []
@@ -174,22 +197,8 @@ with st.spinner(f"Procesando {len(archivos)} archivo(s)..."):
     for archivo in archivos:
         if not archivo.name.lower().endswith(".pdf"):
             continue
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(archivo.read())
-            ruta_tmp = tmp.name
         try:
-            if banco == "BCP":
-                resultado = bcp.procesar_pdf(archivo.name, ruta_tmp)
-            elif banco == "INTERBANK":
-                resultado = interbank.procesar_pdf(archivo.name, ruta_tmp)
-            elif banco == "BBVA":
-                resultado = bbva.procesar_pdf(archivo.name, ruta_tmp)
-            elif banco == "PICHINCHA":
-                resultado = pichincha.procesar_pdf(archivo.name, ruta_tmp)
-            elif banco == "CAJA HUANCAYO":
-                resultado = caja_huancayo.procesar_pdf(archivo.name, ruta_tmp)
-            else:  # SCOTIABANK
-                resultado = scotiabank.procesar_pdf(archivo.name, ruta_tmp)
+            resultado = procesar_archivo(banco, archivo.name, archivo.getvalue())
 
             registros = resultado["registros"]
             alertas   = resultado["alertas"]
@@ -214,8 +223,6 @@ with st.spinner(f"Procesando {len(archivos)} archivo(s)..."):
 
         except Exception as e:
             archivos_sin_datos.append(f"❌ {archivo.name} → error: {str(e)}")
-        finally:
-            os.unlink(ruta_tmp)
 
 with st.expander("📋 Log de procesamiento", expanded=False):
     for msg in archivos_procesados:
@@ -226,6 +233,37 @@ with st.expander("📋 Log de procesamiento", expanded=False):
 if not todos_los_registros and not todas_las_alertas:
     st.error("No se encontraron registros de ITF ni gastos bancarios en los archivos subidos.")
     st.stop()
+
+# ---------------------------------------------------------------------------
+# Alertas que el usuario decidió incluir en los totales
+# (la casilla "Incluir" de cada alerta se dibuja más abajo; aquí solo se lee
+#  su estado para que los totales, el asiento y el Excel ya lo reflejen)
+# ---------------------------------------------------------------------------
+
+def clave_alerta(i: int, a: dict) -> str:
+    return f"incluir_{banco}_{i}_{a.get('Archivo','')}_{a.get('Fecha','')}_{a.get('Monto',0)}"
+
+
+claves_alertas     = [clave_alerta(i, a) for i, a in enumerate(todas_las_alertas)]
+alertas_incluidas  = []   # alertas marcadas → pasan a los totales
+alertas_pendientes = []   # alertas sin marcar → siguen fuera de los totales
+
+for clave, a in zip(claves_alertas, todas_las_alertas):
+    if st.session_state.get(clave, False):
+        r = dict(a)
+        r["Contabilizar"] = True
+        r["Concepto detectado"] = f"{a.get('Concepto detectado','')} ✔ INCLUIDO"
+        r["Motivo alerta"] = f"Incluido manualmente tras revisión. Alerta original: {a.get('Motivo alerta','')}"
+        alertas_incluidas.append(r)
+    else:
+        alertas_pendientes.append(a)
+
+todos_los_registros = todos_los_registros + alertas_incluidas
+
+
+def marcar_todas_alertas(valor: bool):
+    for k in claves_alertas:
+        st.session_state[k] = valor
 
 # ---------------------------------------------------------------------------
 # DataFrame principal — solo registros confirmados
@@ -292,9 +330,9 @@ if not df.empty and "Símbolo" in df.columns:
 elif todas_las_alertas and "Símbolo" in todas_las_alertas[0]:
     simbolo_display = todas_las_alertas[0]["Símbolo"]
 
-# Totales incluyendo alertas (si el usuario confirma todo)
-if todas_las_alertas:
-    df_alertas = pd.DataFrame(todas_las_alertas)
+# Totales incluyendo las alertas que aún están pendientes
+if alertas_pendientes:
+    df_alertas = pd.DataFrame(alertas_pendientes)
     total_itf_con_alertas    = round(
         total_itf + df_alertas[df_alertas["Concepto"] == "IMPUESTO ITF"]["Monto"].sum(), 2
     )
@@ -315,13 +353,25 @@ st.markdown("---")
 if todas_las_alertas:
     col1, col2, col3, col4 = st.columns(4)
     with col4:
-        st.markdown(f"""
-        <div class="metric-card alertas">
-            <div class="metric-label">⚠️ Para revisar</div>
-            <div class="metric-value" style="font-size:1.3rem; color:#92400e;">{len(todas_las_alertas)}</div>
-            <div class="metric-sub warn">No incluidos en el total</div>
-        </div>
-        """, unsafe_allow_html=True)
+        if alertas_pendientes:
+            sub_alt = "No incluidos en el total"
+            if alertas_incluidas:
+                sub_alt += f" · {len(alertas_incluidas)} ya incluida(s)"
+            st.markdown(f"""
+            <div class="metric-card alertas">
+                <div class="metric-label">⚠️ Para revisar</div>
+                <div class="metric-value" style="font-size:1.3rem; color:#92400e;">{len(alertas_pendientes)}</div>
+                <div class="metric-sub warn">{sub_alt}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div class="metric-card" style="border-left-color:#16a34a; background:#f0fdf4;">
+                <div class="metric-label">✅ Alertas revisadas</div>
+                <div class="metric-value" style="font-size:1.3rem; color:#15803d;">{len(alertas_incluidas)}</div>
+                <div class="metric-sub" style="color:#166534;">Incluidas en el total</div>
+            </div>
+            """, unsafe_allow_html=True)
 else:
     col1, col2, col3 = st.columns(3)
 
@@ -378,18 +428,40 @@ if todas_las_alertas:
     st.markdown("---")
     st.markdown(f"### ⚠️ {len(todas_las_alertas)} operación(es) para revisar")
     st.markdown(
-        "Estas operaciones **no están incluidas** en los totales de arriba. "
-        "Revisá el estado de cuenta original y decide si corresponde contabilizarlas."
+        "Estas operaciones **no se suman** a los totales hasta que las marques. "
+        "Revisa el estado de cuenta original y marca **✅ Incluir** en las que "
+        "corresponda contabilizar: se sumarán automáticamente a los totales, "
+        "al asiento sugerido y al Excel."
     )
-    for a in todas_las_alertas:
-        simbolo = a.get("Símbolo", "S/")
-        st.markdown(f"""
-        <div class="alerta-row">
-            <strong>{a.get('Fecha','')} · {a.get('Concepto detectado','')} · {simbolo} {a.get('Monto', 0):,.2f}</strong><br>
-            <span class="alerta-motivo">💡 {a.get('Motivo alerta','')}</span><br>
-            <code style="font-size:0.78rem; color:#78350f;">{a.get('Línea original','')}</code>
-        </div>
-        """, unsafe_allow_html=True)
+
+    b1, b2, _ = st.columns([1, 1, 4])
+    with b1:
+        st.button("✅ Incluir todas", on_click=marcar_todas_alertas, args=(True,),
+                  use_container_width=True)
+    with b2:
+        st.button("↩️ Quitar todas", on_click=marcar_todas_alertas, args=(False,),
+                  use_container_width=True)
+
+    for clave, a in zip(claves_alertas, todas_las_alertas):
+        simbolo  = a.get("Símbolo", "S/")
+        incluida = st.session_state.get(clave, False)
+        c_chk, c_card = st.columns([1, 9])
+        with c_chk:
+            st.checkbox("Incluir", key=clave)
+        with c_card:
+            if incluida:
+                estilo = "background:#f0fdf4; border-color:#86efac;"
+                estado = "<span style='color:#166534; font-weight:600;'>✔ INCLUIDA EN LOS TOTALES</span><br>"
+            else:
+                estilo = ""
+                estado = ""
+            st.markdown(f"""
+            <div class="alerta-row" style="{estilo}">
+                {estado}<strong>{a.get('Fecha','')} · {a.get('Concepto detectado','')} · {simbolo} {a.get('Monto', 0):,.2f}</strong><br>
+                <span class="alerta-motivo">💡 {a.get('Motivo alerta','')}</span><br>
+                <code style="font-size:0.78rem; color:#78350f;">{a.get('Línea original','')}</code>
+            </div>
+            """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Tabs de detalle
@@ -457,8 +529,10 @@ with tab3:
 
 if tab4 is not None:
     with tab4:
+        if alertas_incluidas:
+            st.success(f"{len(alertas_incluidas)} alerta(s) incluida(s) manualmente en los totales.")
         if df_alertas.empty:
-            st.info("Sin alertas.")
+            st.info("No quedan alertas pendientes.")
         else:
             cols_alt = ["Fecha", "Monto", "Concepto detectado", "Motivo alerta", "Archivo"]
             cols_ok  = [c for c in cols_alt if c in df_alertas.columns]
@@ -479,6 +553,12 @@ if total_intereses > 0:
     tabla_asiento += f"""
 | INTERESES A FAVOR | {len(df_intereses)} | {simbolo_display} {total_intereses:,.2f} | Registrar como ingreso financiero a favor de la empresa |"""
 st.markdown(tabla_asiento)
+if alertas_incluidas:
+    monto_incl = round(sum(a.get("Monto", 0) for a in alertas_incluidas), 2)
+    st.caption(
+        f"Incluye {len(alertas_incluidas)} operación(es) que estaban en alerta "
+        f"({simbolo_display} {monto_incl:,.2f}), agregadas manualmente tras revisión."
+    )
 
 # ---------------------------------------------------------------------------
 # Descarga Excel
